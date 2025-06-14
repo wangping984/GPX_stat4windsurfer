@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GPX_stat4windsurfer"
+
+dynamic = ["version"]
+description = "GPX_stat4windsurfer is a tool to extract statistics from GPX files for windsurfers."
+requires-python = ">=3.8"
+authors = [
+    {name = "Ping Wang", email = "coalsea@gmail.com"},
+
+]
+dependencies = [
+    "gpxo>=0.2.0"
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "GPX_stat4windsurfer.__version__"}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "black>=21.0",
+]
+docs = [
+    "sphinx>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["GPX_stat4windsurfer/tests"]
+python_files = ["test_*.py"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"] 

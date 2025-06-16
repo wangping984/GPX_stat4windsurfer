@@ -2,6 +2,9 @@ import gpxo
 import pandas as pd
 import numpy as np
 import pathlib
+from timezonefinder import TimezoneFinder
+from datetime import datetime
+import pytz
 
 def list_files_with_extension(directory_path, extension):
     """List all files with a specific extension in a given directory, including their full paths.
@@ -17,8 +20,9 @@ def list_files_with_extension(directory_path, extension):
     return [str(f) for f in path.rglob(f'*.{extension}')]
 
 class track_enhance(gpxo.Track):
-    def __init__(self, track):
+    def __init__(self, track, planing_threshold=18):
         super().__init__(track)
+        self.planing_threshold = planing_threshold  # 滑行速度阈值，单位km/h
     
     def fastest_in_window(self, seconds):
         """Calculate the maximum average speed over a specified time window.
@@ -80,32 +84,147 @@ class track_enhance(gpxo.Track):
         
         return max_avg_speed
     
-    def performance_report(self):
-        """Generate a performance report showing the maximum average speeds for various time and distance windows.
-        
-        This function prints the maximum average speeds for:
-        - Time windows: 2s, 5s, 10s, 20s, 30s, 1min, 2min, and 5min
-        - Distance windows: 50m, 100m, 200m, 250m, 500m, 1km, 2km, and 5km
-        - Average speed for each 1km segment
+    def get_timezone(self):
+        """根据GPS坐标获取时区
         
         Returns:
-            dict: A dictionary containing the performance data.
+            str: 时区名称（如 'Asia/Shanghai'）
         """
+        try:
+            # 获取轨迹的第一个点的经纬度
+            first_point = self.data.iloc[0]
+            lat = first_point['latitude (°)']
+            lon = first_point['longitude (°)']
+            
+            if pd.isna(lat) or pd.isna(lon):
+                print("经纬度数据为空")
+                return None
+                
+            # 使用TimezoneFinder获取时区
+            tf = TimezoneFinder()
+            timezone_str = tf.timezone_at(lat=float(lat), lng=float(lon))
+            return timezone_str
+        except Exception as e:
+            print(f"获取时区时出错: {e}")
+            return None
+
+    def get_planing_stats(self):
+        """计算滑行统计数据
+        
+        Returns:
+            dict: 包含以下滑行统计信息：
+                - planing_time_ratio: 滑行时间占比
+                - planing_duration: 滑行总时长（秒）
+                - planing_duration_formatted: 格式化的滑行时长
+                - planing_distance: 滑行总距离（公里）
+                - planing_distance_ratio: 滑行距离占比
+                - planing_avg_speed: 滑行平均速度（km/h）
+                - max_planing_distance: 最长滑行距离（公里）
+        """
+        # 获取速度数据
+        velocities = self.data['velocity (km/h)'].values
+        distances = self.data['distance (km)'].values
+        durations = self.data['duration (s)'].values
+        
+        # 计算滑行时间
+        planing_mask = velocities >= self.planing_threshold
+        planing_duration = np.sum(planing_mask)
+        total_duration = durations[-1]
+        planing_time_ratio = planing_duration / total_duration if total_duration > 0 else 0
+        
+        # 格式化滑行时长
+        hours, remainder = divmod(planing_duration, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        duration_str = f"{int(hours)}h{int(minutes)}min{int(seconds)}s"
+        
+        # 计算滑行距离
+        planing_distances = np.diff(distances)[planing_mask[:-1]]  # 使用[:-1]因为diff会减少一个元素
+        planing_distance = np.sum(planing_distances)
+        total_distance = distances[-1] - distances[0]
+        planing_distance_ratio = planing_distance / total_distance if total_distance > 0 else 0
+        
+        # 计算滑行平均速度
+        planing_avg_speed = np.mean(velocities[planing_mask]) if np.any(planing_mask) else 0
+        
+        # 计算最长滑行距离
+        # 找到连续的滑行段
+        planing_segments = []
+        current_segment = []
+        for i, is_planing in enumerate(planing_mask[:-1]):  # 使用[:-1]因为我们要看下一个点
+            if is_planing:
+                current_segment.append(i)
+            elif current_segment:
+                planing_segments.append(current_segment)
+                current_segment = []
+        if current_segment:
+            planing_segments.append(current_segment)
+        
+        # 计算每个滑行段的距离
+        segment_distances = []
+        for segment in planing_segments:
+            if segment:
+                start_idx = segment[0]
+                end_idx = segment[-1] + 1  # +1 因为要包含最后一个点
+                segment_distance = distances[end_idx] - distances[start_idx]
+                segment_distances.append(segment_distance)
+        
+        max_planing_distance = max(segment_distances) if segment_distances else 0
+        
+        return {
+            'planing_time_ratio': round(planing_time_ratio * 100, 2),  # 转换为百分比
+            'planing_duration': round(planing_duration, 2),
+            'planing_duration_formatted': duration_str,
+            'planing_distance': round(planing_distance, 2),
+            'planing_distance_ratio': round(planing_distance_ratio * 100, 2),  # 转换为百分比
+            'planing_avg_speed': round(planing_avg_speed, 2),
+            'max_planing_distance': round(max_planing_distance, 2)
+        }
+
+    @property
+    def results(self):
+        """获取轨迹的性能数据
+        
+        Returns:
+            dict: 包含以下信息的字典：
+                - basic_info: 基本信息（开始时间、总距离、总时长、最大速度、平均速度）
+                - maxspeed_in_time_window: 基于时间窗口的最快速度
+                - maxspeed_in_distance_window: 基于距离窗口的最快速度
+                - speed_in_segments: 每公里段的平均速度
+                - planing_stat: 滑行统计数据
+        """
+        # 初始化basic_info字典
+        basic_info = {}
+        
         # 获取轨迹开始时间
         try:
             # 从data.axes中获取时间索引
             time_index = self.data.axes[0]
             if hasattr(time_index, 'name') and time_index.name == 'time':
                 start_time = time_index[0]
-                # 使用英文格式化时间，避免编码问题
-                formatted_start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
-                print(f"Track Start Time: {formatted_start_time}")
+                # 获取时区
+                timezone_str = self.get_timezone()
+                if timezone_str:
+                    # 将UTC时间转换为当地时间
+                    utc_time = start_time.replace(tzinfo=pytz.UTC)
+                    local_tz = pytz.timezone(timezone_str)
+                    local_time = utc_time.astimezone(local_tz)
+                    formatted_start_time = local_time.strftime('%Y-%m-%d %H:%M:%S')
+                    basic_info['start_time'] = {
+                        'local_time': formatted_start_time,
+                        'timezone': timezone_str
+                    }
+                else:
+                    # 如果无法获取时区，则显示UTC时间
+                    formatted_start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+                    basic_info['start_time'] = {
+                        'utc_time': formatted_start_time
+                    }
         except Exception as e:
             print(f"无法获取轨迹开始时间: {e}")
         
         # 获取总距离
         total_distance = self.data['distance (km)'].iloc[-1]
-        print(f"Total Distance(km): {total_distance:.2f}")
+        basic_info['total_distance'] = round(total_distance, 2)
         
         # 获取总时长
         try:
@@ -115,17 +234,27 @@ class track_enhance(gpxo.Track):
                 total_duration_seconds = (time_index[-1] - time_index[0]).total_seconds()
                 hours, remainder = divmod(total_duration_seconds, 3600)
                 minutes, seconds = divmod(remainder, 60)
-                print(f"Total Duration: {int(hours)}h{int(minutes)}min{int(seconds)}s")
+                duration_str = f"{int(hours)}h{int(minutes)}min{int(seconds)}s"
+                basic_info['total_duration'] = {
+                    'hours': int(hours),
+                    'minutes': int(minutes),
+                    'seconds': int(seconds),
+                    'total_seconds': total_duration_seconds,
+                    'formatted': duration_str
+                }
         except Exception as e:
             print(f"无法计算总时长: {e}")
         
         # 获取最快速度
         max_speed = self.data['velocity (km/h)'].max()
-        print(f"Max Speed(km/h): {max_speed:.2f}")
-        print("=======================")
+        basic_info['max_speed'] = round(max_speed, 2)
+        
+        # 计算平均速度
+        avg_speed = self.data['velocity (km/h)'].mean()
+        basic_info['avg_speed'] = round(avg_speed, 2)
         
         # Calculate all the maximum average speeds for time windows
-        time_results = {
+        maxspeed_in_time_window = {
             '2秒': self.fastest2s,
             '5秒': self.fastest5s,
             '10秒': self.fastest10s,
@@ -137,7 +266,7 @@ class track_enhance(gpxo.Track):
         }
         
         # Calculate all the maximum average speeds for distance windows
-        distance_results = {
+        maxspeed_in_distance_window = {
             '50米': self.fastest_in_distance_window(0.05),
             '100米': self.fastest_in_distance_window(0.1),
             '200米': self.fastest_in_distance_window(0.2),
@@ -149,31 +278,71 @@ class track_enhance(gpxo.Track):
         }
         
         # Calculate average speed for each 1km segment
-        segment_speeds = self.avg_speed_in_segment(1.0)
+        speed_in_segments = self.avg_speed_in_segment(1.0)
+        
+        # 获取滑行统计数据
+        planing_stat = self.get_planing_stats()
         
         # Combine results
-        results = {
-            'time_windows': time_results,
-            'distance_windows': distance_results,
-            'km_segments': segment_speeds
+        return {
+            'basic_info': basic_info,
+            'maxspeed_in_time_window': maxspeed_in_time_window,
+            'maxspeed_in_distance_window': maxspeed_in_distance_window,
+            'speed_in_segments': speed_in_segments,
+            'planing_stat': planing_stat
         }
+    
+    def print_results(self):
+        """打印轨迹的性能报告"""
+        results = self.results
+        basic_info = results['basic_info']
+
+        print('--------------------------------')
+        print('--------------------------------')
         
-        # Print the performance report
+        # 打印基本信息
+        if 'start_time' in basic_info:
+            if 'local_time' in basic_info['start_time']:
+                print(f"{basic_info['start_time']['local_time']}")
+            else:
+                print(f"{basic_info['start_time']['utc_time']}")
+        
+        print(f"Total Distance(km): {basic_info['total_distance']:.2f}")
+        
+        if 'total_duration' in basic_info:
+            print(f"Total Duration: {basic_info['total_duration']['formatted']}")
+        
+        print(f"Max Speed(km/h): {basic_info['max_speed']:.2f}")
+        print(f"Average Speed(km/h): {basic_info['avg_speed']:.2f}")
+        print("=======================")
+        
+        # 打印滑行统计信息
+        planing_stat = results['planing_stat']
+        print("滑行统计 (速度 >= {:.1f} km/h)".format(self.planing_threshold))
+        print("-----------------------")
+        print(f"滑行时间占比: {planing_stat['planing_time_ratio']}%")
+        print(f"滑行总时长: {planing_stat['planing_duration_formatted']}")
+        print(f"滑行总距离: {planing_stat['planing_distance']:.2f}公里")
+        print(f"滑行距离占比: {planing_stat['planing_distance_ratio']}%")
+        print(f"滑行平均速度: {planing_stat['planing_avg_speed']:.2f} km/h")
+        print(f"最长滑行距离: {planing_stat['max_planing_distance']:.2f}公里")
+        print("=======================")
+        
+        # 打印性能报告
         print("性能报告 - 最快平均速度")
         print("=======================")
         print("基于时间窗口:")
-        for window, speed in time_results.items():
+        for window, speed in results['maxspeed_in_time_window'].items():
             print(f"{window}:\t{speed:.2f} km/h")
+        
         print("\n基于距离窗口:")
-        for window, speed in distance_results.items():
+        for window, speed in results['maxspeed_in_distance_window'].items():
             print(f"{window}:\t{speed:.2f} km/h")
         
         print("\n每公里段平均速度:")
-        for i, speed in enumerate(segment_speeds):
+        for i, speed in enumerate(results['speed_in_segments']):
             print(f"第{i+1}公里:\t{speed:.2f} km/h")
         print("=======================")
-        
-        return results
     
     @property
     def fastest2s(self):
@@ -268,7 +437,7 @@ class track_enhance(gpxo.Track):
         velocities = data['velocity (km/h)'].values
         
         # Initialize variables
-        segment_speeds = []
+        speed_in_segments = []
         start_idx = 0
         total_distance = distances[-1]  # Total track distance
         segment_count = int(np.ceil(total_distance / distance))  # Number of segments
@@ -287,7 +456,7 @@ class track_enhance(gpxo.Track):
             if end_idx >= start_idx:
                 segment_velocities = velocities[start_idx:end_idx+1]
                 avg_speed = np.mean(segment_velocities)
-                segment_speeds.append(avg_speed)
+                speed_in_segments.append(avg_speed)
                 
                 # Set start index for next segment
                 start_idx = end_idx
@@ -295,5 +464,5 @@ class track_enhance(gpxo.Track):
                 # This should not happen, but just in case
                 break
         
-        return segment_speeds
+        return speed_in_segments
         

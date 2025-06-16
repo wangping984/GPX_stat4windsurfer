@@ -1,6 +1,20 @@
 import gpxo
 import pandas as pd
 import numpy as np
+import pathlib
+
+def list_files_with_extension(directory_path, extension):
+    """List all files with a specific extension in a given directory, including their full paths.
+
+    Args:
+        directory_path (str): The path to the directory to search.
+        extension (str): The file extension to search for (e.g., 'gpx', 'txt').
+
+    Returns:
+        list: A list of full paths to files with the specified extension.
+    """
+    path = pathlib.Path(directory_path)
+    return [str(f) for f in path.rglob(f'*.{extension}')]
 
 class track_enhance(gpxo.Track):
     def __init__(self, track):
@@ -77,6 +91,39 @@ class track_enhance(gpxo.Track):
         Returns:
             dict: A dictionary containing the performance data.
         """
+        # 获取轨迹开始时间
+        try:
+            # 从data.axes中获取时间索引
+            time_index = self.data.axes[0]
+            if hasattr(time_index, 'name') and time_index.name == 'time':
+                start_time = time_index[0]
+                # 使用英文格式化时间，避免编码问题
+                formatted_start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Track Start Time: {formatted_start_time}")
+        except Exception as e:
+            print(f"无法获取轨迹开始时间: {e}")
+        
+        # 获取总距离
+        total_distance = self.data['distance (km)'].iloc[-1]
+        print(f"Total Distance(km): {total_distance:.2f}")
+        
+        # 获取总时长
+        try:
+            # 从data.axes中获取时间索引
+            time_index = self.data.axes[0]
+            if hasattr(time_index, 'name') and time_index.name == 'time':
+                total_duration_seconds = (time_index[-1] - time_index[0]).total_seconds()
+                hours, remainder = divmod(total_duration_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                print(f"Total Duration: {int(hours)}h{int(minutes)}min{int(seconds)}s")
+        except Exception as e:
+            print(f"无法计算总时长: {e}")
+        
+        # 获取最快速度
+        max_speed = self.data['velocity (km/h)'].max()
+        print(f"Max Speed(km/h): {max_speed:.2f}")
+        print("=======================")
+        
         # Calculate all the maximum average speeds for time windows
         time_results = {
             '2秒': self.fastest2s,

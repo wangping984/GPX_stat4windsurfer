@@ -1,3 +1,4 @@
 *.gpx
 *.egg-info
 __pycache__
+data

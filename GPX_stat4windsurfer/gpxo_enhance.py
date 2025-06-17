@@ -20,9 +20,10 @@ def list_files_with_extension(directory_path, extension):
     return [str(f) for f in path.rglob(f'*.{extension}')]
 
 class track_enhance(gpxo.Track):
-    def __init__(self, track, planing_threshold=18):
+    def __init__(self, track, planing_threshold=18, sample_time_interval_warn_threshold=3):
         super().__init__(track)
         self.planing_threshold = planing_threshold  # 滑行速度阈值，单位km/h
+        self.sample_time_interval_warn_threshold = sample_time_interval_warn_threshold  # 采样间隔警告阈值，单位秒
     
     def fastest_in_window(self, seconds):
         """Calculate the maximum average speed over a specified time window.
@@ -121,64 +122,100 @@ class track_enhance(gpxo.Track):
                 - planing_avg_speed: 滑行平均速度（km/h）
                 - max_planing_distance: 最长滑行距离（公里）
         """
-        # 获取速度数据
-        velocities = self.data['velocity (km/h)'].values
-        distances = self.data['distance (km)'].values
-        durations = self.data['duration (s)'].values
-        
-        # 计算滑行时间
-        planing_mask = velocities >= self.planing_threshold
-        planing_duration = np.sum(planing_mask)
-        total_duration = durations[-1]
-        planing_time_ratio = planing_duration / total_duration if total_duration > 0 else 0
-        
-        # 格式化滑行时长
-        hours, remainder = divmod(planing_duration, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        duration_str = f"{int(hours)}h{int(minutes)}min{int(seconds)}s"
-        
-        # 计算滑行距离
-        planing_distances = np.diff(distances)[planing_mask[:-1]]  # 使用[:-1]因为diff会减少一个元素
-        planing_distance = np.sum(planing_distances)
-        total_distance = distances[-1] - distances[0]
-        planing_distance_ratio = planing_distance / total_distance if total_distance > 0 else 0
-        
-        # 计算滑行平均速度
-        planing_avg_speed = np.mean(velocities[planing_mask]) if np.any(planing_mask) else 0
-        
-        # 计算最长滑行距离
-        # 找到连续的滑行段
-        planing_segments = []
-        current_segment = []
-        for i, is_planing in enumerate(planing_mask[:-1]):  # 使用[:-1]因为我们要看下一个点
-            if is_planing:
-                current_segment.append(i)
-            elif current_segment:
+        try:
+            # 获取速度数据和时间索引
+            velocities = self.data['velocity (km/h)'].values
+            distances = self.data['distance (km)'].values
+            time_index = self.data.axes[0]
+            
+            if not hasattr(time_index, 'name') or time_index.name != 'time':
+                raise ValueError("无法获取时间索引")
+            
+            # 计算实际时间间隔（秒）
+            time_diffs = np.diff(time_index).astype('timedelta64[s]').astype(float)
+            
+            # 计算滑行时间
+            planing_mask = velocities >= self.planing_threshold
+            # 使用实际时间间隔计算滑行时间
+            planing_duration = np.sum(time_diffs[planing_mask[:-1]])  # 使用[:-1]因为diff会减少一个元素
+            total_duration = (time_index[-1] - time_index[0]).total_seconds()
+            planing_time_ratio = planing_duration / total_duration if total_duration > 0 else 0
+            
+            # 格式化滑行时长
+            hours, remainder = divmod(planing_duration, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            duration_str = f"{int(hours)}h{int(minutes)}min{int(seconds)}s"
+            
+            # 计算滑行距离
+            planing_distances = np.diff(distances)[planing_mask[:-1]]  # 使用[:-1]因为diff会减少一个元素
+            planing_distance = np.sum(planing_distances)
+            total_distance = distances[-1] - distances[0]
+            planing_distance_ratio = planing_distance / total_distance if total_distance > 0 else 0
+            
+            # 计算滑行平均速度
+            planing_avg_speed = np.mean(velocities[planing_mask]) if np.any(planing_mask) else 0
+            
+            # 计算最长滑行距离
+            # 找到连续的滑行段
+            planing_segments = []
+            current_segment = []
+            for i, is_planing in enumerate(planing_mask[:-1]):  # 使用[:-1]因为我们要看下一个点
+                if is_planing:
+                    current_segment.append(i)
+                elif current_segment:
+                    planing_segments.append(current_segment)
+                    current_segment = []
+            if current_segment:
                 planing_segments.append(current_segment)
-                current_segment = []
-        if current_segment:
-            planing_segments.append(current_segment)
+            
+            # 计算每个滑行段的距离
+            segment_distances = []
+            for segment in planing_segments:
+                if segment:
+                    start_idx = segment[0]
+                    end_idx = segment[-1] + 1  # +1 因为要包含最后一个点
+                    segment_distance = distances[end_idx] - distances[start_idx]
+                    segment_distances.append(segment_distance)
+            
+            max_planing_distance = max(segment_distances) if segment_distances else 0
+            
+            return {
+                'planing_time_ratio': round(planing_time_ratio * 100, 2),  # 转换为百分比
+                'planing_duration': round(planing_duration, 2),
+                'planing_duration_formatted': duration_str,
+                'planing_distance': round(planing_distance, 2),
+                'planing_distance_ratio': round(planing_distance_ratio * 100, 2),  # 转换为百分比
+                'planing_avg_speed': round(planing_avg_speed, 2),
+                'max_planing_distance': round(max_planing_distance, 2)
+            }
+        except Exception as e:
+            print(f"计算滑行统计时出错: {e}")
+            return None
+
+    def get_sample_time_stats(self):
+        """分析轨迹采样点的时间间隔
         
-        # 计算每个滑行段的距离
-        segment_distances = []
-        for segment in planing_segments:
-            if segment:
-                start_idx = segment[0]
-                end_idx = segment[-1] + 1  # +1 因为要包含最后一个点
-                segment_distance = distances[end_idx] - distances[start_idx]
-                segment_distances.append(segment_distance)
-        
-        max_planing_distance = max(segment_distances) if segment_distances else 0
-        
-        return {
-            'planing_time_ratio': round(planing_time_ratio * 100, 2),  # 转换为百分比
-            'planing_duration': round(planing_duration, 2),
-            'planing_duration_formatted': duration_str,
-            'planing_distance': round(planing_distance, 2),
-            'planing_distance_ratio': round(planing_distance_ratio * 100, 2),  # 转换为百分比
-            'planing_avg_speed': round(planing_avg_speed, 2),
-            'max_planing_distance': round(max_planing_distance, 2)
-        }
+        Returns:
+            dict: 包含以下采样时间统计信息：
+                - avg_interval: 平均采样间隔（秒）
+                - min_interval: 最小采样间隔（秒）
+                - max_interval: 最大采样间隔（秒）
+        """
+        try:
+            # 从data.axes中获取时间索引
+            time_index = self.data.axes[0]
+            if hasattr(time_index, 'name') and time_index.name == 'time':
+                # 计算相邻点之间的时间间隔（秒）
+                time_diffs = np.diff(time_index).astype('timedelta64[s]').astype(float)
+                
+                return {
+                    'avg_interval': round(np.mean(time_diffs), 2),
+                    'min_interval': round(np.min(time_diffs), 2),
+                    'max_interval': round(np.max(time_diffs), 2)
+                }
+        except Exception as e:
+            print(f"计算采样时间间隔时出错: {e}")
+            return None
 
     @property
     def results(self):
@@ -191,6 +228,8 @@ class track_enhance(gpxo.Track):
                 - maxspeed_in_distance_window: 基于距离窗口的最快速度
                 - speed_in_segments: 每公里段的平均速度
                 - planing_stat: 滑行统计数据
+                - sample_time_stats: 采样时间统计
+                - warning: 警告信息
         """
         # 初始化basic_info字典
         basic_info = {}
@@ -283,20 +322,30 @@ class track_enhance(gpxo.Track):
         # 获取滑行统计数据
         planing_stat = self.get_planing_stats()
         
+        # 获取采样时间统计
+        sample_time_stats = self.get_sample_time_stats()
+        
+        # 检查是否需要添加警告
+        warning = None
+        if sample_time_stats and sample_time_stats['max_interval'] > self.sample_time_interval_warn_threshold:
+            warning = 'GPS track point LOW quality: sample time interval'
+        
         # Combine results
         return {
             'basic_info': basic_info,
             'maxspeed_in_time_window': maxspeed_in_time_window,
             'maxspeed_in_distance_window': maxspeed_in_distance_window,
             'speed_in_segments': speed_in_segments,
-            'planing_stat': planing_stat
+            'planing_stat': planing_stat,
+            'sample_time_stats': sample_time_stats,
+            'warning': warning
         }
     
     def print_results(self):
         """打印轨迹的性能报告"""
         results = self.results
         basic_info = results['basic_info']
-
+        
         print('--------------------------------')
         print('--------------------------------')
         
@@ -314,6 +363,16 @@ class track_enhance(gpxo.Track):
         
         print(f"Max Speed(km/h): {basic_info['max_speed']:.2f}")
         print(f"Average Speed(km/h): {basic_info['avg_speed']:.2f}")
+        
+        # 打印采样时间统计
+        if results['sample_time_stats']:
+            stats = results['sample_time_stats']
+            print(f"GPS采样间隔: 平均={stats['avg_interval']}s, 最小={stats['min_interval']}s, 最大={stats['max_interval']}s")
+        
+        # 打印警告信息
+        if results['warning']:
+            print(f"警告: {results['warning']}")
+            
         print("=======================")
         
         # 打印滑行统计信息

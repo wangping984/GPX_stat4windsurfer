@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPX文件分析器</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>GPX文件分析器</h1>
+
+        <div class="upload-section">
+            <form id="uploadForm">
+                <div class="file-input-container">
+                    <input type="file" id="gpxFile" accept=".gpx" required>
+                    <label for="gpxFile">选择GPX文件</label>
+                </div>
+                <button type="submit">上传并分析</button>
+            </form>
+        </div>
+
+        <div class="results-section">
+            <div id="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>正在分析文件...</p>
+            </div>
+            <div id="results"></div>
+            <div id="error" class="error-message"></div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const fileInput = document.getElementById('gpxFile');
+            const file = fileInput.files[0];
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const error = document.getElementById('error');
+
+            if (!file) {
+                error.textContent = '请选择一个文件';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            loading.style.display = 'block';
+            results.innerHTML = '';
+            error.textContent = '';
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // 显示结果
+                    results.innerHTML = '<h2>分析结果：</h2>';
+
+                    // 基本信息
+                    if (data.basic_info) {
+                        const basicInfo = data.basic_info;
+                        results.innerHTML += '<div class="section">';
+                        results.innerHTML += '<h3>基本信息</h3>';
+
+                        if (basicInfo.start_time) {
+                            if (basicInfo.start_time.local_time) {
+                                results.innerHTML += `<p>${basicInfo.start_time.local_time}</p>`;
+                            } else {
+                                results.innerHTML += `<p>${basicInfo.start_time.utc_time}</p>`;
+                            }
+                        }
+
+                        results.innerHTML += `<p>总距离: ${basicInfo.total_distance} 公里</p>`;
+
+                        if (basicInfo.total_duration) {
+                            results.innerHTML += `<p>总时长: ${basicInfo.total_duration.formatted}</p>`;
+                        }
+
+                        results.innerHTML += `<p>最大速度: ${basicInfo.max_speed} km/h</p>`;
+                        results.innerHTML += `<p>平均速度: ${basicInfo.avg_speed} km/h</p>`;
+                        results.innerHTML += '</div>';
+                    }
+
+                    // GPS采样统计
+                    if (data.sample_time_stats) {
+                        const stats = data.sample_time_stats;
+                        results.innerHTML += '<div class="section">';
+                        results.innerHTML += '<h3>GPS采样统计</h3>';
+                        results.innerHTML += `<p>GPS采样间隔: 平均=${stats.avg_interval}s, 最小=${stats.min_interval}s, 最大=${stats.max_interval}s</p>`;
+                        // 警告信息
+                        if (data.warning) {
+                            // results.innerHTML += '<div class="section warning">';
+                            results.innerHTML += `<p>警告: ${data.warning}</p>`;
+                            // results.innerHTML += '</div>';
+                        }
+                        results.innerHTML += '</div>';
+                    }
+
+                    
+
+                    // 滑行统计
+                    if (data.planing_stat) {
+                        const planing = data.planing_stat;
+                        results.innerHTML += '<div class="section">';
+                        results.innerHTML += '<h3>滑行统计</h3>';
+                        results.innerHTML += `<p>滑行时间占比: ${planing.planing_time_ratio}%</p>`;
+                        results.innerHTML += `<p>滑行总时长: ${planing.planing_duration_formatted}</p>`;
+                        results.innerHTML += `<p>滑行总距离: ${planing.planing_distance} 公里</p>`;
+                        results.innerHTML += `<p>滑行距离占比: ${planing.planing_distance_ratio}%</p>`;
+                        results.innerHTML += `<p>滑行平均速度: ${planing.planing_avg_speed} km/h</p>`;
+                        results.innerHTML += `<p>最长滑行距离: ${planing.max_planing_distance} 公里</p>`;
+                        results.innerHTML += '</div>';
+                    }
+
+                    // 性能报告 - 最快平均速度
+                    results.innerHTML += '<div class="section">';
+                    results.innerHTML += '<h3>性能报告 - 最快平均速度</h3>';
+
+                    // 基于时间窗口
+                    if (data.maxspeed_in_time_window) {
+                        results.innerHTML += '<h4>基于时间窗口:</h4>';
+                        // 将时间窗口转换为秒数并排序
+                        const timeWindows = Object.entries(data.maxspeed_in_time_window)
+                            .map(([window, speed]) => {
+                                let seconds;
+                                if (window.includes('秒')) {
+                                    seconds = parseInt(window);
+                                } else if (window.includes('分钟')) {
+                                    seconds = parseInt(window) * 60;
+                                }
+                                return { window, speed, seconds };
+                            })
+                            .sort((a, b) => a.seconds - b.seconds);
+
+                        for (const { window, speed } of timeWindows) {
+                            if (speed !== null && speed !== undefined) {
+                                results.innerHTML += `<p>${window}: ${Number(speed).toFixed(2)} km/h</p>`;
+                            }
+                        }
+                    }
+
+                    // 基于距离窗口
+                    if (data.maxspeed_in_distance_window) {
+                        results.innerHTML += '<h4>基于距离窗口:</h4>';
+                        // 将距离窗口转换为米数并排序
+                        const distanceWindows = Object.entries(data.maxspeed_in_distance_window)
+                            .map(([window, speed]) => {
+                                let meters;
+                                if (window.includes('米')) {
+                                    meters = parseInt(window);
+                                } else if (window.includes('公里')) {
+                                    meters = parseInt(window) * 1000;
+                                }
+                                return { window, speed, meters };
+                            })
+                            .sort((a, b) => a.meters - b.meters);
+
+                        for (const { window, speed } of distanceWindows) {
+                            if (speed !== null && speed !== undefined) {
+                                results.innerHTML += `<p>${window}: ${Number(speed).toFixed(2)} km/h</p>`;
+                            }
+                        }
+                    }
+
+                    // 每公里段平均速度
+                    if (data.speed_in_segments) {
+                        results.innerHTML += '<h4>每公里段平均速度:</h4>';
+                        data.speed_in_segments.forEach((speed, index) => {
+                            if (speed !== null && speed !== undefined) {
+                                results.innerHTML += `<p>第${index + 1}公里: ${Number(speed).toFixed(2)} km/h</p>`;
+                            }
+                        });
+                    }
+
+                    results.innerHTML += '</div>';
+                } else {
+                    error.textContent = data.error || '上传失败';
+                }
+            } catch (err) {
+                error.textContent = '发生错误：' + err.message;
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+
+</html>

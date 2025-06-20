@@ -25,6 +25,16 @@ class track_enhance(gpxo.Track):
         self.planing_threshold = planing_threshold  # 滑行速度阈值，单位km/h
         self.sample_time_interval_warn_threshold = sample_time_interval_warn_threshold  # 采样间隔警告阈值，单位秒
     
+    def get_interpolated_data_1s(self):
+        """返回1秒间隔线性插值后的DataFrame，索引为DatetimeIndex"""
+        df = self.data.copy()
+        # 确保索引为DatetimeIndex
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError("数据索引不是DatetimeIndex，无法插值")
+        # 1秒重采样并线性插值
+        df_interp = df.resample('1s').interpolate('linear')
+        return df_interp
+
     def fastest_in_window(self, seconds):
         """Calculate the maximum average speed over a specified time window.
         
@@ -34,12 +44,29 @@ class track_enhance(gpxo.Track):
         Returns:
             float: Maximum average speed in km/h over the specified time window in the track.
         """
-        velocity_data = self.data['velocity (km/h)']
-        # The window size is seconds+1 because we need to include both endpoints
-        # (e.g., points at t=0s through t=seconds make a 'seconds' second window)
-        window_size = seconds + 1
-        rolling_mean = velocity_data.rolling(window=window_size, min_periods=window_size).mean()
-        return rolling_mean.max()
+        # 用插值后的数据计算最大平均速度
+        data = self.get_interpolated_data_1s()
+        distances = data['distance (km)'].values
+        time_index = data.index
+        max_avg_speed = 0
+        end_idx_previous = 1
+        for start_idx in range(len(distances)):
+            for end_idx in range(end_idx_previous, len(distances)):
+                t0 = time_index[start_idx]
+                t1 = time_index[end_idx]
+                segment_time = (t1 - t0).total_seconds()
+                if segment_time >= seconds:
+                    segment_distance = distances[end_idx] - distances[start_idx]
+                    segment_time_hr = segment_time / 3600
+                    if segment_time_hr > 0:
+                        avg_speed = segment_distance / segment_time_hr
+                    else:
+                        avg_speed = 0
+                    if avg_speed > max_avg_speed:
+                        max_avg_speed = avg_speed
+                    end_idx_previous = end_idx
+                    break
+        return max_avg_speed
     
     def fastest_in_distance_window(self, dist_window):
         """Calculate the maximum average speed over a specified distance window.
@@ -53,36 +80,27 @@ class track_enhance(gpxo.Track):
         Returns:
             float: Maximum average speed in km/h over the specified distance window in the track.
         """
-        # Get the distance and velocity data
-        data = self.data[['distance (km)', 'velocity (km/h)']].copy()
-        
-        # Calculate the cumulative distance for each point
+        # 用插值后的数据计算最大平均速度
+        data = self.get_interpolated_data_1s()
         distances = data['distance (km)'].values
-        velocities = data['velocity (km/h)'].values
-        
-        # Initialize variables to track the maximum average speed
+        time_index = data.index
         max_avg_speed = 0
-        
-        # For each starting point
+        end_idx_previous = 1
         for start_idx in range(len(distances)):
-            # Find the end point that is approximately dist_window away
-            for end_idx in range(start_idx + 1, len(distances)):
-                # Calculate the distance between start and end points
+            for end_idx in range(end_idx_previous, len(distances)):
                 segment_distance = distances[end_idx] - distances[start_idx]
-                
-                # If we've reached or exceeded the desired window distance
                 if segment_distance >= dist_window:
-                    # Calculate the average speed for this segment
-                    segment_velocities = velocities[start_idx:end_idx+1]
-                    avg_speed = np.mean(segment_velocities)
-                    
-                    # Update the maximum average speed if this segment is faster
+                    t0 = time_index[start_idx]
+                    t1 = time_index[end_idx]
+                    segment_time = (t1 - t0).total_seconds() / 3600
+                    if segment_time > 0:
+                        avg_speed = segment_distance / segment_time
+                    else:
+                        avg_speed = 0
                     if avg_speed > max_avg_speed:
                         max_avg_speed = avg_speed
-                    
-                    # No need to check larger windows from this starting point
+                    end_idx_previous = end_idx
                     break
-        
         return max_avg_speed
     
     def get_timezone(self):
@@ -488,40 +506,37 @@ class track_enhance(gpxo.Track):
         Returns:
             list: A list of average speeds (km/h) for each segment.
         """
-        # Get the distance and velocity data
+        # Get the distance, velocity, and time data
         data = self.data[['distance (km)', 'velocity (km/h)']].copy()
-        
-        # Calculate the cumulative distance for each point
         distances = data['distance (km)'].values
         velocities = data['velocity (km/h)'].values
+        # 获取时间索引
+        time_index = self.data.axes[0]
         
-        # Initialize variables
         speed_in_segments = []
         start_idx = 0
-        total_distance = distances[-1]  # Total track distance
-        segment_count = int(np.ceil(total_distance / distance))  # Number of segments
+        total_distance = distances[-1]
+        segment_count = int(np.ceil(total_distance / distance))
         
-        # Process each segment
         for segment in range(segment_count):
-            # Calculate target distance for this segment
             target_distance = min((segment + 1) * distance, total_distance)
-            
-            # Find the end index for this segment
             end_idx = start_idx
             while end_idx < len(distances) - 1 and distances[end_idx] < target_distance:
                 end_idx += 1
-            
-            # Calculate average speed for this segment
             if end_idx >= start_idx:
-                segment_velocities = velocities[start_idx:end_idx+1]
-                avg_speed = np.mean(segment_velocities)
+                # 计算该段距离和时间
+                segment_distance = distances[end_idx] - distances[start_idx]
+                # 获取对应的时间（假设time_index为DatetimeIndex）
+                t0 = time_index[start_idx]
+                t1 = time_index[end_idx]
+                segment_time = (t1 - t0).total_seconds() / 3600  # 小时
+                if segment_time > 0:
+                    avg_speed = segment_distance / segment_time  # km/h
+                else:
+                    avg_speed = 0
                 speed_in_segments.append(avg_speed)
-                
-                # Set start index for next segment
                 start_idx = end_idx
             else:
-                # This should not happen, but just in case
                 break
-        
         return speed_in_segments
         

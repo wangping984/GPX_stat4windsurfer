@@ -20,10 +20,11 @@ def list_files_with_extension(directory_path, extension):
     return [str(f) for f in path.rglob(f'*.{extension}')]
 
 class track_enhance(gpxo.Track):
-    def __init__(self, track, planing_threshold=18, sample_time_interval_warn_threshold=3):
+    def __init__(self, track, planing_threshold=18, sample_time_interval_warn_threshold=3, sample_distance_warn_threshold = 15):
         super().__init__(track)
         self.planing_threshold = planing_threshold  # 滑行速度阈值，单位km/h
         self.sample_time_interval_warn_threshold = sample_time_interval_warn_threshold  # 采样间隔警告阈值，单位秒
+        self.sample_distance_warn_threshold = sample_distance_warn_threshold # 采样距离间隔警告阈值，单位m
     
     def get_interpolated_data_1s(self):
         """返回1秒间隔线性插值后的DataFrame，索引为DatetimeIndex"""
@@ -210,14 +211,17 @@ class track_enhance(gpxo.Track):
             print(f"计算滑行统计时出错: {e}")
             return None
 
-    def get_sample_time_stats(self):
-        """分析轨迹采样点的时间间隔
+    def get_GPS_sample_stats(self):
+        """分析轨迹采样点的时间间隔和距离间隔
         
         Returns:
-            dict: 包含以下采样时间统计信息：
-                - avg_interval: 平均采样间隔（秒）
-                - min_interval: 最小采样间隔（秒）
-                - max_interval: 最大采样间隔（秒）
+            dict: 包含以下采样统计信息：
+                - avg_interval: 平均采样时间间隔（秒）
+                - min_interval: 最小采样时间间隔（秒）
+                - max_interval: 最大采样时间间隔（秒）
+                - avg_distance: 平均采样距离间隔（米）
+                - min_distance: 最小采样距离间隔（米）
+                - max_distance: 最大采样距离间隔（米）
         """
         try:
             # 从data.axes中获取时间索引
@@ -226,13 +230,21 @@ class track_enhance(gpxo.Track):
                 # 计算相邻点之间的时间间隔（秒）
                 time_diffs = np.diff(time_index).astype('timedelta64[s]').astype(float)
                 
+                # 使用现有的distance数据计算相邻点之间的距离间隔（米）
+                distances_km = self.data['distance (km)'].values
+                distance_diffs = np.diff(distances_km)  # 相邻点间的距离差（公里）
+                distance_diffs_m = distance_diffs * 1000  # 转换为米
+                
                 return {
                     'avg_interval': round(np.mean(time_diffs), 2),
                     'min_interval': round(np.min(time_diffs), 2),
-                    'max_interval': round(np.max(time_diffs), 2)
+                    'max_interval': round(np.max(time_diffs), 2),
+                    'avg_distance': round(np.mean(distance_diffs_m), 2),
+                    'min_distance': round(np.min(distance_diffs_m), 2),
+                    'max_distance': round(np.max(distance_diffs_m), 2)
                 }
         except Exception as e:
-            print(f"计算采样时间间隔时出错: {e}")
+            print(f"计算GPS采样统计时出错: {e}")
             return None
 
     @property
@@ -246,7 +258,7 @@ class track_enhance(gpxo.Track):
                 - maxspeed_in_distance_window: 基于距离窗口的最快速度
                 - speed_in_segments: 每公里段的平均速度
                 - planing_stat: 滑行统计数据
-                - sample_time_stats: 采样时间统计
+                - GPS_sample_stats: 采样时间统计
                 - warning: 警告信息
         """
         # 初始化basic_info字典
@@ -341,12 +353,16 @@ class track_enhance(gpxo.Track):
         planing_stat = self.get_planing_stats()
         
         # 获取采样时间统计
-        sample_time_stats = self.get_sample_time_stats()
+        GPS_sample_stats = self.get_GPS_sample_stats()
         
         # 检查是否需要添加警告
-        warning = None
-        if sample_time_stats and sample_time_stats['max_interval'] > self.sample_time_interval_warn_threshold:
-            warning = 'GPS track point LOW quality: sample time interval'
+        warning = ''
+        if GPS_sample_stats and GPS_sample_stats['max_interval'] > self.sample_time_interval_warn_threshold:
+            warning = 'GPS采样时间间隔过长'
+        if GPS_sample_stats and GPS_sample_stats['max_distance'] > self.sample_distance_warn_threshold:
+            warning += ',GPS采样距离间隔过长'
+        
+        warning += '\n 请谨慎看待分析结果'
         
         # Combine results
         return {
@@ -355,7 +371,7 @@ class track_enhance(gpxo.Track):
             'maxspeed_in_distance_window': maxspeed_in_distance_window,
             'speed_in_segments': speed_in_segments,
             'planing_stat': planing_stat,
-            'sample_time_stats': sample_time_stats,
+            'GPS_sample_stats': GPS_sample_stats,
             'warning': warning
         }
     
@@ -383,9 +399,10 @@ class track_enhance(gpxo.Track):
         print(f"Average Speed(km/h): {basic_info['avg_speed']:.2f}")
         
         # 打印采样时间统计
-        if results['sample_time_stats']:
-            stats = results['sample_time_stats']
-            print(f"GPS采样间隔: 平均={stats['avg_interval']}s, 最小={stats['min_interval']}s, 最大={stats['max_interval']}s")
+        if results['GPS_sample_stats']:
+            stats = results['GPS_sample_stats']
+            print(f"GPS采样时间间隔: 平均={stats['avg_interval']}s, 最小={stats['min_interval']}s, 最大={stats['max_interval']}s")
+            print(f"GPS采样距离间隔: 平均={stats['avg_distance']}m, 最小={stats['min_distance']}m, 最大={stats['max_distance']}m")
         
         # 打印警告信息
         if results['warning']:

@@ -1,0 +1,13 @@
+[Unit]
+Description=Gunicorn instance to serve GPX_stat4windsurfer
+After=network.target
+
+[Service]
+User=wp
+Group=wp
+WorkingDirectory=/home/wp/webserv/GPX_stat4windsurfer
+Environment="PATH=/home/wp/webserv/myenv1/bin"
+ExecStart=/home/wp/webserv/myenv1/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+
+[Install]
+WantedBy=multi-user.target

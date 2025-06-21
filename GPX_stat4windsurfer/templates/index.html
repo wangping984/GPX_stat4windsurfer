@@ -4,13 +4,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GPX文件分析器</title>
+    <title>帆板/水翼/风翼运动轨迹分析</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
     <div class="container">
-        <h1>GPX文件分析器</h1>
+        <h1>帆板/水翼/风翼运动轨迹分析</h1>
 
         <div class="upload-section">
             <form id="uploadForm">
@@ -18,6 +18,7 @@
                     <input type="file" id="gpxFile" accept=".gpx" required>
                     <label for="gpxFile">选择GPX文件</label>
                 </div>
+                <div id="selectedFileName" class="selected-file-name"></div>
                 <button type="submit">上传并分析</button>
             </form>
         </div>
@@ -33,6 +34,20 @@
     </div>
 
     <script>
+        // 监听文件选择事件，显示选中的文件名
+        document.getElementById('gpxFile').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            const fileNameDisplay = document.getElementById('selectedFileName');
+
+            if (file) {
+                fileNameDisplay.textContent = `已选择文件: ${file.name}`;
+                fileNameDisplay.style.display = 'block';
+            } else {
+                fileNameDisplay.textContent = '';
+                fileNameDisplay.style.display = 'none';
+            }
+        });
+
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -92,11 +107,14 @@
                     }
 
                     // GPS采样统计
-                    if (data.sample_time_stats) {
-                        const stats = data.sample_time_stats;
+                    if (data.GPS_sample_stats) {
+                        const stats = data.GPS_sample_stats;
                         results.innerHTML += '<div class="section">';
-                        results.innerHTML += '<h3>GPS采样统计</h3>';
-                        results.innerHTML += `<p>GPS采样间隔: 平均=${stats.avg_interval}s, 最小=${stats.min_interval}s, 最大=${stats.max_interval}s</p>`;
+                        results.innerHTML += '<h3>GPS采样质量</h3>';
+                        results.innerHTML += `<p>GPS采样时间间隔: 平均=${stats.avg_interval}s, 最小=${stats.min_interval}s, 最大=${stats.max_interval}s</p>`;
+                        if (stats.avg_distance !== undefined) {
+                            results.innerHTML += `<p>GPS采样距离间隔: 平均=${stats.avg_distance}m, 最小=${stats.min_distance}m, 最大=${stats.max_distance}m</p>`;
+                        }
                         // 警告信息
                         if (data.warning) {
                             // results.innerHTML += '<div class="section warning">';
@@ -106,7 +124,7 @@
                         results.innerHTML += '</div>';
                     }
 
-                    
+
 
                     // 滑行统计
                     if (data.planing_stat) {
@@ -124,7 +142,7 @@
 
                     // 性能报告 - 最快平均速度
                     results.innerHTML += '<div class="section">';
-                    results.innerHTML += '<h3>性能报告 - 最快平均速度</h3>';
+                    results.innerHTML += '<h3>最快平均速度统计</h3>';
 
                     // 基于时间窗口
                     if (data.maxspeed_in_time_window) {
@@ -174,7 +192,7 @@
 
                     // 每公里段平均速度
                     if (data.speed_in_segments) {
-                        results.innerHTML += '<h4>每公里段平均速度:</h4>';
+                        results.innerHTML += '<h3>每公里段平均速度:</h3>';
                         data.speed_in_segments.forEach((speed, index) => {
                             if (speed !== null && speed !== undefined) {
                                 results.innerHTML += `<p>第${index + 1}公里: ${Number(speed).toFixed(2)} km/h</p>`;
